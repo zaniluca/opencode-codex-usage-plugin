@@ -113,6 +113,25 @@ describe("Usage.formatCompactUsage", () => {
   })
 })
 
+describe("Usage.formatUsageLines", () => {
+  const now = new Date(0)
+
+  it("includes only available usage windows", () => {
+    const usage = Usage.CodexUsage.make({
+      fiveHour: null,
+      weekly: Usage.UsageWindow.make({ label: "weekly", usedPercent: 13, resetsAt: 604_800 }),
+    })
+
+    expect(Usage.formatUsageLines(usage, now)).toEqual(["weekly: 87% · resets in 7d"])
+  })
+
+  it("returns no lines when all usage windows are unavailable", () => {
+    const usage = Usage.CodexUsage.make({ fiveHour: null, weekly: null })
+
+    expect(Usage.formatUsageLines(usage, now)).toEqual([])
+  })
+})
+
 describe("Usage.formatResetTime", () => {
   it("formats unknown, elapsed, minute, hour, and day resets", () => {
     const now = new Date(0)
