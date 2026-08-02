@@ -64,12 +64,12 @@ export function formatCompactUsage(usage: CodexUsage): string | null {
   return window ? `${window.label} ${formatRemainingPercent(window.usedPercent)}` : null
 }
 
-export function formatUsageLines(usage: CodexUsage, now = new Date()): ReadonlyArray<string> {
+export function formatUsageLines(usage: CodexUsage): ReadonlyArray<string> {
   return [usage.fiveHour, usage.weekly]
     .filter((window): window is UsageWindow => window !== null)
     .map(
       (window) =>
-        `${window.label}: ${formatRemainingPercent(window.usedPercent)} · ${formatResetTime(window.resetsAt, now)}`,
+        `${window.label}: ${formatRemainingPercent(window.usedPercent)} · ${formatResetTime(window.resetsAt)}`,
     )
 }
 

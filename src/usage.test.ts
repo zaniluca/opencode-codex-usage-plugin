@@ -1,4 +1,4 @@
-import { describe, expect, it } from "@effect/vitest"
+import { afterEach, describe, expect, it, vi } from "@effect/vitest"
 import { Effect } from "effect"
 import { Usage } from "./usage.js"
 
@@ -114,21 +114,23 @@ describe("Usage.formatCompactUsage", () => {
 })
 
 describe("Usage.formatUsageLines", () => {
-  const now = new Date(0)
+  afterEach(() => vi.useRealTimers())
 
   it("includes only available usage windows", () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(0))
     const usage = Usage.CodexUsage.make({
       fiveHour: null,
       weekly: Usage.UsageWindow.make({ label: "weekly", usedPercent: 13, resetsAt: 604_800 }),
     })
 
-    expect(Usage.formatUsageLines(usage, now)).toEqual(["weekly: 87% · resets in 7d"])
+    expect(Usage.formatUsageLines(usage)).toEqual(["weekly: 87% · resets in 7d"])
   })
 
   it("returns no lines when all usage windows are unavailable", () => {
     const usage = Usage.CodexUsage.make({ fiveHour: null, weekly: null })
 
-    expect(Usage.formatUsageLines(usage, now)).toEqual([])
+    expect(Usage.formatUsageLines(usage)).toEqual([])
   })
 })
 
