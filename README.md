@@ -18,21 +18,19 @@ opencode plugin opencode-codex-usage-plugin@latest --global
 
 This installs the plugin and updates your global OpenCode TUI config automatically.
 
-Alternatively, add the plugin manually to your OpenCode TUI config (`~/.config/opencode/tui.json`):
+Alternatively, add the plugin manually to your OpenCode config (`~/.config/opencode/opencode.jsonc`):
 
 ```jsonc
-// tui.json
+// opencode.jsonc
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["opencode-codex-usage-plugin@latest"]
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["opencode-codex-usage-plugin@latest"],
 }
 ```
 
 Restart OpenCode after changing the config.
 
-> [!IMPORTANT]
-> This is a TUI plugin, so configure it in `tui.json`, not in `opencode.json`.
-> The `plugin` field in `opencode.json` is for server/runtime plugins and will not load this sidebar plugin.
+The package uses OpenCode v2's Effect-native plugin API. Its main entrypoint enables the companion TUI plugin, which renders the usage in the sidebar and prompt status area.
 
 ## Requirements
 
@@ -49,13 +47,13 @@ Then reload your shell config or open a new terminal before starting OpenCode.
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request on GitHub. To get started fork the repo, install the dependencies and in your OpenCode TUI config add the local path to the output of the plugin like so:
+Contributions are welcome! Please open an issue or submit a pull request on GitHub. To get started, fork the repo, install the dependencies, build it, and add the local output to your OpenCode config:
 
 ```jsonc
-// tui.json
+// opencode.jsonc
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "plugin": ["file:///Users/<your_username>/path/to/your-clone/opencode-codex-usage-plugin/dist/tui.js"]
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["file:///Users/<your_username>/path/to/your-clone/opencode-codex-usage-plugin/dist/index.js"],
 }
 ```
 
