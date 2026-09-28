@@ -1,8 +1,8 @@
 import { execFile, spawn, type SpawnOptions } from "node:child_process"
 import { once } from "node:events"
 import { createRequire } from "node:module"
-import { accessSync, constants } from "node:fs"
-import { delimiter, join } from "node:path"
+import { accessSync, constants, existsSync, readdirSync, statSync } from "node:fs"
+import { delimiter, isAbsolute, join, win32 } from "node:path"
 import { createInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
 import { Clock, Context, Effect, Layer, Predicate, Schema, Semaphore } from "effect"
@@ -206,7 +206,13 @@ export const layer = (options: Options = {}) =>
         events: ConnectionEvents,
       ) {
         const child = yield* Effect.try({
-          try: () => spawnProcess(command, ["app-server", "--listen", "stdio://"], { stdio: ["pipe", "pipe", "pipe"] }),
+          try: () => {
+            const { file, shell } = processCommand(command)
+            return spawnProcess(file, ["app-server", "--listen", "stdio://"], {
+              shell,
+              stdio: ["pipe", "pipe", "pipe"],
+            })
+          },
           catch: (cause) => new ServerStartError({ message: "Failed to start Codex app-server.", cause }),
         })
         if (!isTransportProcess(child)) {
@@ -462,16 +468,48 @@ export const layer = (options: Options = {}) =>
 export function resolveCodexCommand(
   commandExists: CommandExists = commandAvailable,
   env: Partial<NodeJS.ProcessEnv> = process.env,
+  platform: NodeJS.Platform = process.platform,
+  listAppCommands: (directory: string) => ReadonlyArray<string> = listChatGPTAppCommands,
 ): string | null {
   const configured = env.OPENCODE_CODEX_USAGE_COMMAND
   if (configured) return configured
+  if (platform !== "win32") return [...CODEX_COMMAND_CANDIDATES, "codex"].find(commandExists) ?? null
 
-  return CODEX_COMMAND_CANDIDATES.find(commandExists) ?? (commandExists("codex") ? "codex" : null)
+  const localAppData = env.LOCALAPPDATA
+  return (
+    [
+      ...(localAppData ? [win32.join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe")] : []),
+      // Windows only runs files with an extension; npm also installs an extensionless `codex` shell script there.
+      "codex.exe",
+      "codex.cmd",
+      // The ChatGPT app ships its CLI in a protected WindowsApps package and runs a per-version copy from here.
+      ...(localAppData ? listAppCommands(win32.join(localAppData, "OpenAI", "Codex", "bin")) : []),
+    ].find(commandExists) ?? null
+  )
+}
+
+function listChatGPTAppCommands(directory: string): ReadonlyArray<string> {
+  try {
+    return readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(directory, entry.name, "codex.exe"))
+      .filter((path) => existsSync(path))
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+  } catch {
+    return []
+  }
+}
+
+// Since CVE-2024-27980 Node refuses to run .cmd files (e.g. npm's `codex.cmd`) without a shell.
+function processCommand(command: string): { readonly file: string; readonly shell: boolean } {
+  const shell = process.platform === "win32" && /\.cmd$/i.test(command)
+  return { file: shell ? `"${command}"` : command, shell }
 }
 
 function startDaemon(command: string): Effect.Effect<string, ServerStartError> {
   return Effect.callback<string, ServerStartError>((resume) => {
-    execFile(command, ["app-server", "daemon", "start"], { timeout: DAEMON_START_TIMEOUT_MS }, (cause, stdout) => {
+    const { file, shell } = processCommand(command)
+    execFile(file, ["app-server", "daemon", "start"], { shell, timeout: DAEMON_START_TIMEOUT_MS }, (cause, stdout) => {
       resume(
         cause
           ? Effect.fail(new ServerStartError({ message: "Failed to start the Codex app-server daemon.", cause }))
@@ -505,7 +543,7 @@ function isTransportProcess(process: CodexProcess): process is TransportProcess 
 }
 
 function commandAvailable(command: string): boolean {
-  if (command.includes("/")) return isExecutable(command)
+  if (isAbsolute(command)) return isExecutable(command)
 
   return (process.env.PATH ?? "")
     .split(delimiter)
