@@ -2,6 +2,7 @@ import { spawn, type SpawnOptions } from "node:child_process"
 import { createRequire } from "node:module"
 import { accessSync, constants, unlinkSync } from "node:fs"
 import { createConnection } from "node:net"
+import { tmpdir } from "node:os"
 import { delimiter, join } from "node:path"
 import { createInterface, type Interface as ReadlineInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
@@ -134,7 +135,7 @@ const MISSING_CODEX_MESSAGE =
   "Codex is not installed. Install Codex.app or the Codex CLI, or set OPENCODE_CODEX_USAGE_COMMAND."
 const DEFAULT_TIMEOUT_MS = 10_000
 const DEFAULT_SOCKET_PATH = join(
-  "/tmp",
+  tmpdir(),
   `opencode-codex-usage-plugin-${typeof process.getuid === "function" ? process.getuid() : "user"}.sock`,
 )
 const CODEX_COMMAND_CANDIDATES = [
@@ -514,7 +515,9 @@ export function resolveCodexCommand(
   const configured = env.OPENCODE_CODEX_USAGE_COMMAND
   if (configured) return configured
 
-  return CODEX_COMMAND_CANDIDATES.find(commandExists) ?? (commandExists("codex") ? "codex" : null)
+  const commandCandidates =
+    process.platform === "win32" ? ["codex", "codex.exe", "codex.cmd", "codex.bat"] : ["codex"]
+  return [...CODEX_COMMAND_CANDIDATES, ...commandCandidates].find(commandExists) ?? null
 }
 
 const parseProtocolMessage = Effect.fn("CodexService.parseProtocolMessage")(function* (line: string) {
