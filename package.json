@@ -24,11 +24,6 @@
   ],
   "type": "module",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
-    },
     "./tui": {
       "types": "./dist/tui.d.ts",
       "import": "./dist/tui.js",
@@ -49,22 +44,28 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "0.0.0-beta-18684",
-    "@opentui/solid": "^0.5.9",
-    "effect": "4.0.0-rc.112",
-    "solid-js": "1.9.12"
+    "@opencode/plugin": "2.3.2",
+    "effect": "4.1.0"
   },
   "devDependencies": {
-    "@effect/language-service": "0.87.2",
-    "@effect/vitest": "4.0.0-rc.112",
+    "@effect/language-service": "0.87.5",
+    "@effect/vitest": "4.1.0",
+    "@opencode/theme": "2.3.2",
+    "@opentui/core": "0.9.7",
+    "@opentui/solid": "0.9.7",
     "@types/node": "^24.10.1",
-    "effect-solutions": "^0.5.3",
     "oxfmt": "^0.56.0",
+    "solid-js": "1.9.17",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.15"
+    "vitest": "^5.1.1"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.8.4",
+    "@opentui/solid": ">=0.8.4",
+    "solid-js": "^1.9.12"
   },
   "engines": {
-    "opencode": ">=2.0.0-beta"
+    "opencode": ">=2.3.0"
   },
   "packageManager": "pnpm@10.33.0"
 }

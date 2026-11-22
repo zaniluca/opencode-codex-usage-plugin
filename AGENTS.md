@@ -78,21 +78,9 @@ Use these rules when writing Effect code.
 - Use `Schema.Defect` instead of `unknown` for defect-like causes.
 - In `Effect.gen` / `Effect.fn`, prefer `yield* new MyError(...)` over `yield* Effect.fail(new MyError(...))` for direct early-failure branches.
 
-## Effect Best Practices
-
-**IMPORTANT:** Always consult effect-solutions before writing Effect code.
-
-1. Run `pnpm effect-solutions list` to see available guides
-2. Run `pnpm effect-solutions show <topic>...` for relevant patterns (supports multiple topics)
-3. Search `~/.local/share/opencode/repos/github.com/Effect-TS/effect-smol` for real implementations
-
-Topics: quick-start, project-setup, tsconfig, basics, services-and-layers, data-modeling, error-handling, config, testing, cli.
-
-Never guess at Effect patterns - check the guide first.
-
 ## Local Effect References
 
-The Effect source is cloned to `~/.local/share/opencode/repos/github.com/Effect-TS/effect-smol` for implementation details when local guides and installed package types are not enough.
+Never guess at Effect patterns. The Effect v4 source is cloned to `~/.local/share/opencode/repos/github.com/Effect-TS/effect`; search it for real implementations when the installed package types are not enough.
 
 The OpenCode repository at `~/.local/share/opencode/repos/github.com/anomalyco/opencode` has useful examples for structuring an Effect codebase.
 

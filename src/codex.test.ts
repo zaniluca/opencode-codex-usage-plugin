@@ -2,10 +2,9 @@ import { EventEmitter } from "node:events"
 import { createRequire } from "node:module"
 import { PassThrough } from "node:stream"
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Layer, ManagedRuntime } from "effect"
+import { Effect, Layer, Logger, ManagedRuntime } from "effect"
 import { vi } from "vitest"
 import { CodexService } from "./codex.ts"
-import { Logger } from "./logger.ts"
 
 const packageJson = createRequire(import.meta.url)("../package.json") as { version: string }
 
@@ -19,21 +18,16 @@ type TestProcess = EventEmitter & {
 }
 
 describe("CodexService", () => {
-  it("falls back to stdio when the shared Unix socket is unavailable", async () => {
+  it("reads usage over the stdio transport", async () => {
     const direct = createProcess()
-    const socketPath = "/tmp/ocu-test.sock"
-    const spawn = vi.fn().mockReturnValueOnce(createProcess()).mockReturnValueOnce(direct)
-    const runtime = createRuntime({ command: "/tmp/codex", socketPath, spawn, timeoutMs: 100 })
+    const spawn = vi.fn().mockReturnValueOnce(direct)
+    const runtime = createRuntime({ command: "/tmp/codex", spawn, timeoutMs: 100 })
 
     try {
       const usagePromise = readUsage(runtime)
-      await waitForSpawnCall(spawn, 2)
+      await waitForSpawnCall(spawn, 1)
 
-      expect(spawn).toHaveBeenNthCalledWith(1, "/tmp/codex", ["app-server", "--listen", `unix://${socketPath}`], {
-        detached: true,
-        stdio: ["ignore", "ignore", "pipe"],
-      })
-      expect(spawn).toHaveBeenNthCalledWith(2, "/tmp/codex", ["app-server", "--listen", "stdio://"], {
+      expect(spawn).toHaveBeenCalledWith("/tmp/codex", ["app-server", "--listen", "stdio://"], {
         stdio: ["pipe", "pipe", "pipe"],
       })
 
@@ -102,13 +96,13 @@ describe("CodexService", () => {
 
   it("fails with an invalid payload error when Codex changes the response shape", async () => {
     const direct = createProcess()
-    const spawn = vi.fn().mockReturnValueOnce(createProcess()).mockReturnValueOnce(direct)
-    const runtime = createRuntime({ command: "/tmp/codex", socketPath: "/tmp/ocu-invalid.sock", spawn, timeoutMs: 100 })
+    const spawn = vi.fn().mockReturnValueOnce(direct)
+    const runtime = createRuntime({ command: "/tmp/codex", spawn, timeoutMs: 100 })
 
     try {
       const usagePromise = readUsage(runtime)
       void usagePromise.catch(() => undefined)
-      await waitForSpawnCall(spawn, 2)
+      await waitForSpawnCall(spawn, 1)
       const initialize = await waitForRequest(direct)
       direct.stdout.write(`${JSON.stringify({ id: initialize.id, result: {} })}\n`)
       await nextTick()
@@ -163,7 +157,7 @@ describe("CodexService.resolveCodexCommand", () => {
 })
 
 function createRuntime(options: CodexService.Options) {
-  return ManagedRuntime.make(CodexService.layer(options).pipe(Layer.provideMerge(Logger.noopLayer)))
+  return ManagedRuntime.make(CodexService.layer(options).pipe(Layer.provideMerge(Logger.layer([]))))
 }
 
 function readUsage(runtime: ReturnType<typeof createRuntime>) {

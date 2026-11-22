@@ -1,12 +1,10 @@
 import { spawn, type SpawnOptions } from "node:child_process"
 import { createRequire } from "node:module"
-import { accessSync, constants, unlinkSync } from "node:fs"
-import { createConnection } from "node:net"
+import { accessSync, constants } from "node:fs"
 import { delimiter, join } from "node:path"
 import { createInterface, type Interface as ReadlineInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
 import { Clock, Context, Effect, Layer, Predicate, Schema, Semaphore } from "effect"
-import { Logger } from "./logger.ts"
 import { Usage } from "./usage.ts"
 
 const packageJson = createRequire(import.meta.url)("../package.json") as { version: string }
@@ -92,7 +90,6 @@ export interface Options {
   readonly command?: string
   readonly commandExists?: CommandExists
   readonly env?: Partial<NodeJS.ProcessEnv>
-  readonly socketPath?: string
   readonly spawn?: SpawnCodex
   readonly timeoutMs?: number
 }
@@ -121,10 +118,6 @@ const decodeProtocolMessage = Schema.decodeUnknownEffect(ProtocolMessage)
 const MISSING_CODEX_MESSAGE =
   "Codex is not installed. Install Codex.app or the Codex CLI, or set OPENCODE_CODEX_USAGE_COMMAND."
 const DEFAULT_TIMEOUT_MS = 10_000
-const DEFAULT_SOCKET_PATH = join(
-  "/tmp",
-  `opencode-codex-usage-plugin-${typeof process.getuid === "function" ? process.getuid() : "user"}.sock`,
-)
 const CODEX_COMMAND_CANDIDATES = [
   "/opt/homebrew/bin/codex",
   "/usr/local/bin/codex",
@@ -136,7 +129,6 @@ export const layer = (options: Options = {}) =>
     Service,
     Effect.gen(function* () {
       const command = options.command ?? resolveCodexCommand(options.commandExists, options.env)
-      const socketPath = options.socketPath ?? DEFAULT_SOCKET_PATH
       const spawnProcess = options.spawn ?? spawn
       const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
       const pending = new Map<RequestId, PendingRequest>()
@@ -198,7 +190,7 @@ export const layer = (options: Options = {}) =>
         yield* cleanupTransport()
       })
 
-      yield* Effect.logDebug("client.created", { command, socketPath, timeoutMs })
+      yield* Effect.logDebug("client.created", { command, timeoutMs })
       yield* Effect.addFinalizer(() => dispose())
 
       const spawnCodex = Effect.fn("CodexService.spawn")(function* (
@@ -213,56 +205,6 @@ export const layer = (options: Options = {}) =>
         })
         yield* Effect.logDebug(message, { command, args })
         return child
-      })
-
-      const startSharedServer = Effect.fn("CodexService.startSharedServer")(function* () {
-        const args = ["app-server", "--listen", `unix://${socketPath}`]
-        const server = yield* spawnCodex(
-          args,
-          { detached: true, stdio: ["ignore", "ignore", "pipe"] },
-          "server.shared.spawn",
-        )
-        let stderr = ""
-        server.stderr?.on("data", (chunk: Buffer | string) => {
-          stderr += chunk.toString()
-        })
-
-        const exited = Effect.callback<never, ServerStartError>((resume) => {
-          const settle = (error: ServerStartError) => {
-            server.removeAllListeners?.()
-            resume(Effect.fail(error))
-          }
-          server.once("error", (cause) =>
-            settle(new ServerStartError({ message: "Codex shared app-server failed to start.", cause })),
-          )
-          server.once("exit", (code, signal) =>
-            settle(
-              new ServerStartError({
-                message: stderr.trim() || `Codex app-server exited with ${signal ?? code ?? "unknown status"}.`,
-              }),
-            ),
-          )
-          return Effect.sync(() => server.removeAllListeners?.())
-        })
-
-        yield* waitForSocket(socketPath, timeoutMs).pipe(
-          Effect.raceFirst(exited),
-          Effect.tap(() =>
-            Effect.sync(() => {
-              server.unref?.()
-            }),
-          ),
-          Effect.onError(() => Effect.sync(() => server.kill())),
-        )
-      })
-
-      const ensureSharedServer = Effect.fn("CodexService.ensureSharedServer")(function* () {
-        if (yield* canConnectToSocket(socketPath)) {
-          yield* Effect.logDebug("server.socket.reuse", { socketPath })
-          return
-        }
-        yield* removeStaleSocket(socketPath)
-        yield* startSharedServer()
       })
 
       const startTransport = Effect.fn("CodexService.startTransport")(function* (
@@ -369,18 +311,7 @@ export const layer = (options: Options = {}) =>
           return yield* new CommandMissingError({ message: MISSING_CODEX_MESSAGE })
         }
 
-        yield* Effect.gen(function* () {
-          yield* ensureSharedServer()
-          yield* startTransport(["app-server", "proxy", "--sock", socketPath], "server.proxy.spawn")
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.gen(function* () {
-              // Fallback to stdio if the proxy fails
-              yield* Effect.logDebug("server.shared.fallback_stdio", { command, socketPath, error: error.message })
-              yield* startTransport(["app-server", "--listen", "stdio://"], "server.stdio.spawn")
-            }),
-          ),
-        )
+        yield* startTransport(["app-server", "--listen", "stdio://"], "server.stdio.spawn")
 
         yield* send("initialize", {
           clientInfo: {
@@ -493,8 +424,6 @@ export const layer = (options: Options = {}) =>
     }),
   )
 
-export const defaultLayer = layer().pipe(Layer.provideMerge(Logger.noopLayer))
-
 export function resolveCodexCommand(
   commandExists: CommandExists = commandAvailable,
   env: Partial<NodeJS.ProcessEnv> = process.env,
@@ -530,61 +459,6 @@ function commandAvailable(command: string): boolean {
     .split(delimiter)
     .filter(Boolean)
     .some((directory) => isExecutable(join(directory, command)))
-}
-
-function canConnectToSocket(socketPath: string): Effect.Effect<boolean> {
-  return Effect.callback<boolean>((resume) => {
-    let settled = false
-    let socket: ReturnType<typeof createConnection> | undefined
-    const done = (connected: boolean) => {
-      if (settled) return
-      settled = true
-      socket?.removeAllListeners()
-      socket?.destroy()
-      resume(Effect.succeed(connected))
-    }
-
-    try {
-      socket = createConnection(socketPath)
-      socket.setTimeout(250)
-      socket.once("connect", () => done(true))
-      socket.once("error", () => done(false))
-      socket.once("timeout", () => done(false))
-    } catch {
-      done(false)
-    }
-
-    return Effect.sync(() => done(false))
-  })
-}
-
-const waitForSocket = Effect.fn("CodexService.waitForSocket")(function* (socketPath: string, timeoutMs: number) {
-  const deadline = (yield* Clock.currentTimeMillis) + timeoutMs
-
-  while ((yield* Clock.currentTimeMillis) < deadline) {
-    if (yield* canConnectToSocket(socketPath)) return
-    yield* Effect.sleep(100)
-  }
-
-  return yield* new ServerStartError({ message: `Timed out waiting for Codex app-server socket at ${socketPath}.` })
-})
-
-function removeStaleSocket(socketPath: string): Effect.Effect<void> {
-  return Effect.try({
-    try: () => unlinkSync(socketPath),
-    catch: (cause) => new ServerStartError({ message: "Failed to remove stale Codex app-server socket.", cause }),
-  }).pipe(
-    Effect.tap(() => Effect.logDebug("server.socket.unlink_stale", { socketPath })),
-    Effect.catch((error) =>
-      isNodeError(error.cause) && error.cause.code === "ENOENT"
-        ? Effect.void
-        : Effect.logError("server.socket.unlink_stale_error", { socketPath, error: error.message }),
-    ),
-  )
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return Predicate.hasProperty(error, "code")
 }
 
 function isExecutable(path: string): boolean {

@@ -13,7 +13,7 @@ This plugin reads Codex usage from Codex App or the Codex CLI and renders the cu
 Use OpenCode's native plugin installer:
 
 ```sh
-opencode plugin opencode-codex-usage-plugin@latest --global
+opencode plugin add opencode-codex-usage-plugin@latest
 ```
 
 This installs the plugin and updates your global OpenCode TUI config automatically.
@@ -30,7 +30,7 @@ Alternatively, add the plugin manually to your OpenCode config (`~/.config/openc
 
 Restart OpenCode after changing the config.
 
-The package uses OpenCode v2's Effect-native plugin API. Its main entrypoint enables the companion TUI plugin, which renders the usage in the sidebar and prompt status area.
+The package is a TUI-only OpenCode v2 plugin that renders the usage in the sidebar and prompt status area.
 
 ## Requirements
 
@@ -53,7 +53,7 @@ Contributions are welcome! Please open an issue or submit a pull request on GitH
 // opencode.jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["file:///Users/<your_username>/path/to/your-clone/opencode-codex-usage-plugin/dist/index.js"],
+  "plugins": ["file:///Users/<your_username>/path/to/your-clone/opencode-codex-usage-plugin"],
 }
 ```
 

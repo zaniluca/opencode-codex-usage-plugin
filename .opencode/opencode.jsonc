@@ -2,8 +2,8 @@
   "$schema": "https://opencode.ai/config.json",
   "references": {
     "effect": {
-      "repository": "Effect-TS/effect-smol",
-      "description": "Use for Effect v4 and effect-smol implementation details",
+      "repository": "Effect-TS/effect",
+      "description": "Use for Effect v4 implementation details",
     },
     "opencode": {
       "repository": "anomalyco/opencode",
