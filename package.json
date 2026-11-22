@@ -44,22 +44,30 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.17.9",
-    "@opentui/solid": "^0.4.1",
-    "effect": "4.0.0-beta.85",
-    "solid-js": "1.9.12"
+    "@opencode/plugin": "2.3.2",
+    "effect": "4.1.0",
+    "ws": "8.23.0"
   },
   "devDependencies": {
-    "@effect/language-service": "0.86.2",
-    "@effect/vitest": "4.0.0-beta.85",
+    "@effect/language-service": "0.87.5",
+    "@effect/vitest": "4.1.0",
+    "@opencode/theme": "2.3.2",
+    "@opentui/core": "0.9.7",
+    "@opentui/solid": "0.9.7",
     "@types/node": "^24.10.1",
-    "effect-solutions": "^0.5.3",
+    "@types/ws": "8.18.2",
     "oxfmt": "^0.56.0",
+    "solid-js": "1.9.17",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.15"
+    "vitest": "^5.1.1"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.8.4",
+    "@opentui/solid": ">=0.8.4",
+    "solid-js": "^1.9.12"
   },
   "engines": {
-    "opencode": ">=1.17.0"
+    "opencode": ">=2.3.0"
   },
   "packageManager": "pnpm@10.33.0"
 }
