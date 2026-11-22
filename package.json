@@ -45,7 +45,8 @@
   },
   "dependencies": {
     "@opencode/plugin": "2.3.2",
-    "effect": "4.1.0"
+    "effect": "4.1.0",
+    "ws": "8.23.0"
   },
   "devDependencies": {
     "@effect/language-service": "0.87.5",
@@ -54,6 +55,7 @@
     "@opentui/core": "0.9.7",
     "@opentui/solid": "0.9.7",
     "@types/node": "^24.10.1",
+    "@types/ws": "8.18.2",
     "oxfmt": "^0.56.0",
     "solid-js": "1.9.17",
     "typescript": "^5.9.3",

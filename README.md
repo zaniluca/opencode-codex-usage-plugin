@@ -6,7 +6,7 @@ Show your Codex usage and reset times directly in the OpenCode sidebar.
   <img src="https://raw.githubusercontent.com/zaniluca/opencode-codex-usage-plugin/main/assets/demo.gif" alt="opencode-codex-usage-plugin demo" width="80%">
 </p>
 
-This plugin reads Codex usage from Codex App or the Codex CLI and renders the current 5-hour and weekly limits inside OpenCode, so you can keep an eye on quota without leaving the TUI.
+This plugin reads Codex usage from the ChatGPT app or the Codex CLI and renders the current 5-hour and weekly limits inside OpenCode, so you can keep an eye on quota without leaving the TUI.
 
 ## Install
 
@@ -34,7 +34,9 @@ The package is a TUI-only OpenCode v2 plugin that renders the usage in the sideb
 
 ## Requirements
 
-Install either **Codex App** or the **Codex CLI**. The plugin looks for Codex in common locations and on your `PATH`.
+Install either the **ChatGPT app**, which bundles Codex, or the **Codex CLI**. The plugin looks for Codex in common locations and on your `PATH`.
+
+The plugin reads usage through Codex's shared app-server daemon, so every OpenCode window reuses the same Codex process. If the daemon is not running, the plugin starts it with `codex app-server daemon start`; the first start installs it under `~/.codex` and can take a while, and the daemon keeps running after OpenCode exits. If the daemon cannot start, each OpenCode window runs its own `codex app-server` instead.
 
 If your Codex command lives somewhere else, set `OPENCODE_CODEX_USAGE_COMMAND` in your shell config:
 

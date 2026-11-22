@@ -1,9 +1,14 @@
 import { EventEmitter } from "node:events"
+import { mkdtempSync, rmSync } from "node:fs"
+import { createServer } from "node:http"
 import { createRequire } from "node:module"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { PassThrough } from "node:stream"
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer, Logger, ManagedRuntime } from "effect"
 import { vi } from "vitest"
+import { WebSocketServer } from "ws"
 import { CodexService } from "./codex.ts"
 
 const packageJson = createRequire(import.meta.url)("../package.json") as { version: string }
@@ -14,14 +19,49 @@ type TestProcess = EventEmitter & {
   readonly stderr: PassThrough
   readonly writes: string[]
   readonly kill: ReturnType<typeof vi.fn>
-  readonly unref: ReturnType<typeof vi.fn>
 }
 
+const RATE_LIMITS_RESULT = {
+  rateLimits: {
+    primary: { usedPercent: 14, windowDurationMins: 300, resetsAt: 123 },
+    secondary: { usedPercent: 42, windowDurationMins: 10080, resetsAt: 456 },
+  },
+  rateLimitsByLimitId: null,
+}
+
+const noDaemon = Effect.fail(new CodexService.ServerStartError({ message: "No daemon in tests." }))
+
 describe("CodexService", () => {
-  it("reads usage over the stdio transport", async () => {
+  it("reads usage through the shared app-server daemon without spawning a process", async () => {
+    const daemon = await createDaemon((request) => {
+      if (request.method === "initialize") return { id: request.id, result: {} }
+      if (request.method === "account/rateLimits/read") return { id: request.id, result: RATE_LIMITS_RESULT }
+    })
+    const spawn = vi.fn()
+    const runtime = createRuntime({
+      command: "/tmp/codex",
+      daemonSocket: Effect.succeed(daemon.socketPath),
+      spawn,
+      timeoutMs: 1_000,
+    })
+
+    try {
+      await expect(readUsage(runtime)).resolves.toMatchObject({
+        fiveHour: { label: "5h", usedPercent: 14, resetsAt: 123 },
+        weekly: { label: "weekly", usedPercent: 42, resetsAt: 456 },
+      })
+      expect(daemon.methods).toEqual(["initialize", "account/rateLimits/read"])
+      expect(spawn).not.toHaveBeenCalled()
+    } finally {
+      await runtime.dispose()
+      await daemon.close()
+    }
+  })
+
+  it("falls back to a private stdio app-server when the daemon is unavailable", async () => {
     const direct = createProcess()
     const spawn = vi.fn().mockReturnValueOnce(direct)
-    const runtime = createRuntime({ command: "/tmp/codex", spawn, timeoutMs: 100 })
+    const runtime = createRuntime({ command: "/tmp/codex", daemonSocket: noDaemon, spawn, timeoutMs: 100 })
 
     try {
       const usagePromise = readUsage(runtime)
@@ -59,18 +99,7 @@ describe("CodexService", () => {
       expect(rateLimits.id).toBe("opencode-codex-usage-plugin-2")
       expect(rateLimits.method).toBe("account/rateLimits/read")
 
-      direct.stdout.write(
-        `${JSON.stringify({
-          id: rateLimits.id,
-          result: {
-            rateLimits: {
-              primary: { usedPercent: 14, windowDurationMins: 300, resetsAt: 123 },
-              secondary: { usedPercent: 42, windowDurationMins: 10080, resetsAt: 456 },
-            },
-            rateLimitsByLimitId: null,
-          },
-        })}\n`,
-      )
+      direct.stdout.write(`${JSON.stringify({ id: rateLimits.id, result: RATE_LIMITS_RESULT })}\n`)
       await nextTick()
 
       await expect(usagePromise).resolves.toMatchObject({
@@ -97,7 +126,7 @@ describe("CodexService", () => {
   it("fails with an invalid payload error when Codex changes the response shape", async () => {
     const direct = createProcess()
     const spawn = vi.fn().mockReturnValueOnce(direct)
-    const runtime = createRuntime({ command: "/tmp/codex", spawn, timeoutMs: 100 })
+    const runtime = createRuntime({ command: "/tmp/codex", daemonSocket: noDaemon, spawn, timeoutMs: 100 })
 
     try {
       const usagePromise = readUsage(runtime)
@@ -135,10 +164,13 @@ describe("CodexService.resolveCodexCommand", () => {
     )
   })
 
-  it("uses the bundled Codex app binary when it exists", () => {
+  it("uses the Codex binary bundled with the ChatGPT app when it exists", () => {
     expect(
-      CodexService.resolveCodexCommand((command) => command === "/Applications/Codex.app/Contents/Resources/codex", {}),
-    ).toBe("/Applications/Codex.app/Contents/Resources/codex")
+      CodexService.resolveCodexCommand(
+        (command) => command === "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
+        {},
+      ),
+    ).toBe("/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex")
   })
 
   it("uses a known CLI path", () => {
@@ -180,7 +212,6 @@ function createProcess(): TestProcess {
     stderr: new PassThrough(),
     writes,
     kill: vi.fn(() => undefined),
-    unref: vi.fn(() => undefined),
   })
 }
 
@@ -203,4 +234,33 @@ async function waitForSpawnCall(spawn: ReturnType<typeof vi.fn>, count: number):
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
   throw new Error(`Expected ${count} spawn call(s).`)
+}
+
+async function createDaemon(respond: (request: Record<string, unknown>) => unknown) {
+  const directory = mkdtempSync(join(tmpdir(), "codex-daemon-"))
+  const socketPath = join(directory, "app-server.sock")
+  const server = createServer()
+  const sockets = new WebSocketServer({ server })
+  const methods: unknown[] = []
+
+  sockets.on("connection", (socket) => {
+    socket.on("message", (data) => {
+      const request = JSON.parse(data.toString()) as Record<string, unknown>
+      methods.push(request.method)
+      const response = respond(request)
+      if (response) socket.send(JSON.stringify(response))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+
+  return {
+    socketPath,
+    methods,
+    close: async () => {
+      for (const client of sockets.clients) client.terminate()
+      await new Promise((resolve) => sockets.close(resolve))
+      await new Promise((resolve) => server.close(resolve))
+      rmSync(directory, { recursive: true, force: true })
+    },
+  }
 }

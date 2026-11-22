@@ -1,10 +1,12 @@
-import { spawn, type SpawnOptions } from "node:child_process"
+import { execFile, spawn, type SpawnOptions } from "node:child_process"
+import { once } from "node:events"
 import { createRequire } from "node:module"
 import { accessSync, constants } from "node:fs"
 import { delimiter, join } from "node:path"
-import { createInterface, type Interface as ReadlineInterface } from "node:readline"
+import { createInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
 import { Clock, Context, Effect, Layer, Predicate, Schema, Semaphore } from "effect"
+import WebSocket from "ws"
 import { Usage } from "./usage.ts"
 
 const packageJson = createRequire(import.meta.url)("../package.json") as { version: string }
@@ -70,8 +72,6 @@ interface CodexProcess {
   readonly stdout: Readable | null
   readonly stderr: Readable | null
   readonly kill: () => unknown
-  readonly unref?: () => unknown
-  readonly removeAllListeners?: () => unknown
   readonly once: {
     (event: "error", listener: (error: globalThis.Error) => void): unknown
     (event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown
@@ -89,6 +89,8 @@ type SpawnCodex = (command: string, args: ReadonlyArray<string>, options: SpawnO
 export interface Options {
   readonly command?: string
   readonly commandExists?: CommandExists
+  /** Resolves the shared Codex app-server daemon socket. Defaults to `codex app-server daemon start`. */
+  readonly daemonSocket?: Effect.Effect<string, ServerStartError>
   readonly env?: Partial<NodeJS.ProcessEnv>
   readonly spawn?: SpawnCodex
   readonly timeoutMs?: number
@@ -100,9 +102,14 @@ interface PendingRequest {
   readonly timer: NodeJS.Timeout
 }
 
-interface TransportState {
-  readonly process: TransportProcess
-  readonly lines: ReadlineInterface
+interface Connection {
+  readonly send: (text: string) => void
+  readonly close: () => void
+}
+
+interface ConnectionEvents {
+  readonly message: (text: string) => void
+  readonly closed: (error: TransportError) => void
 }
 
 class ProtocolMessage extends Schema.Class<ProtocolMessage>("CodexService.ProtocolMessage")({
@@ -114,14 +121,19 @@ class ProtocolMessage extends Schema.Class<ProtocolMessage>("CodexService.Protoc
 }) {}
 
 const decodeProtocolMessage = Schema.decodeUnknownEffect(ProtocolMessage)
+const decodeDaemonStatus = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ socketPath: Schema.String })),
+)
 
 const MISSING_CODEX_MESSAGE =
-  "Codex is not installed. Install Codex.app or the Codex CLI, or set OPENCODE_CODEX_USAGE_COMMAND."
+  "Codex is not installed. Install the ChatGPT app or the Codex CLI, or set OPENCODE_CODEX_USAGE_COMMAND."
 const DEFAULT_TIMEOUT_MS = 10_000
+// The first `daemon start` copies the whole Codex package (~450 MB); killing it midway leaves a broken install.
+const DAEMON_START_TIMEOUT_MS = 120_000
 const CODEX_COMMAND_CANDIDATES = [
   "/opt/homebrew/bin/codex",
   "/usr/local/bin/codex",
-  "/Applications/Codex.app/Contents/Resources/codex",
+  "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex",
 ]
 
 export const layer = (options: Options = {}) =>
@@ -133,7 +145,7 @@ export const layer = (options: Options = {}) =>
       const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
       const pending = new Map<RequestId, PendingRequest>()
 
-      let transport: TransportState | undefined
+      let transport: Connection | undefined
       let nextId = 1
       let initialized = false
 
@@ -153,33 +165,29 @@ export const layer = (options: Options = {}) =>
           pending.clear()
         })
 
-      const cleanupTransport = (expected?: TransportProcess, shouldKill = true) =>
+      const cleanupTransport = (expected?: Connection) =>
         Effect.sync(() => {
           const current = transport
-          if (!current || (expected && current.process !== expected)) return
-          current.lines.close()
-          if (shouldKill) current.process.kill()
+          if (!current || (expected && current !== expected)) return
+          // Detach first so close events from the old connection are ignored.
           transport = undefined
           initialized = false
+          current.close()
         })
 
-      const failTransport = (target: TransportProcess, error: TransportError) =>
+      const failTransport = (target: Connection, error: TransportError) =>
         Effect.gen(function* () {
-          if (transport?.process !== target) return
-          yield* Effect.logError("server.error", { error: error.message })
+          if (transport !== target) return
+          yield* Effect.logWarning("server.closed", { error: error.message })
           yield* rejectAll(error)
           yield* cleanupTransport(target)
         })
 
-      const writeProtocol = Effect.fn("CodexService.writeProtocol")(function* (
-        target: TransportProcess,
-        payload: unknown,
-      ) {
-        if (transport?.process !== target)
-          return yield* new TransportError({ message: "Codex app-server transport is stale." })
+      const writeProtocol = Effect.fn("CodexService.writeProtocol")(function* (target: Connection, payload: unknown) {
+        if (transport !== target) return yield* new TransportError({ message: "Codex app-server transport is stale." })
 
         yield* Effect.try({
-          try: () => target.stdin.write(`${JSON.stringify(payload)}\n`),
+          try: () => target.send(JSON.stringify(payload)),
           catch: (cause) => new TransportError({ message: "Failed to write to Codex app-server.", cause }),
         })
       })
@@ -193,68 +201,87 @@ export const layer = (options: Options = {}) =>
       yield* Effect.logDebug("client.created", { command, timeoutMs })
       yield* Effect.addFinalizer(() => dispose())
 
-      const spawnCodex = Effect.fn("CodexService.spawn")(function* (
-        args: ReadonlyArray<string>,
-        spawnOptions: SpawnOptions,
-        message: string,
+      const connectStdio = Effect.fn("CodexService.connectStdio")(function* (
+        command: string,
+        events: ConnectionEvents,
       ) {
-        if (!command) return yield* new CommandMissingError({ message: MISSING_CODEX_MESSAGE })
         const child = yield* Effect.try({
-          try: () => spawnProcess(command, [...args], spawnOptions),
+          try: () => spawnProcess(command, ["app-server", "--listen", "stdio://"], { stdio: ["pipe", "pipe", "pipe"] }),
           catch: (cause) => new ServerStartError({ message: "Failed to start Codex app-server.", cause }),
         })
-        yield* Effect.logDebug(message, { command, args })
-        return child
-      })
-
-      const startTransport = Effect.fn("CodexService.startTransport")(function* (
-        args: ReadonlyArray<string>,
-        event: string,
-      ) {
-        const child = yield* spawnCodex(args, { stdio: ["pipe", "pipe", "pipe"] }, event)
         if (!isTransportProcess(child)) {
           child.kill()
-          return yield* new TransportError({ message: "Codex app-server proxy did not expose stdio." })
+          return yield* new TransportError({ message: "Codex app-server did not expose stdio." })
         }
 
-        child.once("error", (cause) => {
-          runCallbackEffect(
-            Effect.gen(function* () {
-              if (transport?.process !== child) return
-              const error = new TransportError({ message: "Codex app-server transport failed.", cause })
-              yield* failTransport(child, error)
-            }),
-          )
-        })
-
-        child.stdin.on("error", (cause) => {
-          runCallbackEffect(
-            failTransport(child, new TransportError({ message: "Codex app-server stdin failed.", cause })),
-          )
-        })
-
-        child.once("exit", (code, signal) => {
-          runCallbackEffect(
-            Effect.gen(function* () {
-              if (transport?.process !== child) return
-              const message = `Codex app-server exited with ${signal ?? code ?? "unknown status"}.`
-              yield* Effect.logWarning("server.exit", { code, signal })
-              yield* rejectAll(new TransportError({ message }))
-              yield* cleanupTransport(child, false)
-            }),
-          )
-        })
-
         const lines = createInterface({ input: child.stdout })
-        lines.on("line", (line) => {
-          if (transport?.process === child) runCallbackEffect(handleLine(child, line))
-        })
+        lines.on("line", events.message)
+        child.once("error", (cause) =>
+          events.closed(new TransportError({ message: "Codex app-server transport failed.", cause })),
+        )
+        child.stdin.on("error", (cause) =>
+          events.closed(new TransportError({ message: "Codex app-server stdin failed.", cause })),
+        )
+        child.once("exit", (code, signal) =>
+          events.closed(
+            new TransportError({ message: `Codex app-server exited with ${signal ?? code ?? "unknown status"}.` }),
+          ),
+        )
         child.stderr.on("data", (chunk: Buffer | string) => {
-          if (transport?.process !== child) return
           const message = chunk.toString().trim()
           if (message) runCallbackEffect(Effect.logWarning("server.stderr", { message: message.slice(0, 500) }))
         })
-        transport = { process: child, lines }
+
+        return {
+          send: (text: string) => child.stdin.write(`${text}\n`),
+          close: () => {
+            lines.close()
+            child.kill()
+          },
+        }
+      })
+
+      const connectDaemon = Effect.fn("CodexService.connectDaemon")(function* (
+        socketPath: string,
+        events: ConnectionEvents,
+      ) {
+        // The daemon's control socket speaks JSON-RPC over WebSocket, one message per frame.
+        const socket = new WebSocket(`ws+unix://${socketPath}:/`, { handshakeTimeout: timeoutMs })
+        // Register before connecting: some runtimes emit `error` more than once, and an unhandled one throws.
+        socket.on("message", (data) => events.message(data.toString()))
+        socket.on("error", (cause) =>
+          events.closed(new TransportError({ message: "Codex app-server daemon connection failed.", cause })),
+        )
+        socket.on("close", () =>
+          events.closed(new TransportError({ message: "Codex app-server daemon closed the connection." })),
+        )
+
+        yield* Effect.tryPromise({
+          try: () => once(socket, "open"),
+          catch: (cause) => new TransportError({ message: "Failed to connect to the Codex app-server daemon.", cause }),
+        }).pipe(Effect.onError(() => Effect.sync(() => socket.terminate())))
+
+        return {
+          send: (text: string) => socket.send(text),
+          close: () => socket.close(),
+        }
+      })
+
+      const connect = Effect.fn("CodexService.connect")(function* <E>(
+        open: (events: ConnectionEvents) => Effect.Effect<Connection, E>,
+      ) {
+        let connection: Connection | undefined
+        connection = yield* open({
+          message: (text) => {
+            const current = connection
+            if (current && transport === current) runCallbackEffect(handleLine(current, text))
+          },
+          closed: (error) => {
+            const current = connection
+            if (current && transport === current) runCallbackEffect(failTransport(current, error))
+          },
+        })
+        transport = connection
       })
 
       const send = Effect.fn("CodexService.send")(function* (method: string, params: unknown) {
@@ -286,12 +313,12 @@ export const layer = (options: Options = {}) =>
 
           pending.set(id, { method, resume, timer })
           runCallbackEffect(
-            writeProtocol(current.process, payload).pipe(
+            writeProtocol(current, payload).pipe(
               Effect.catch((error) =>
                 Effect.gen(function* () {
                   clearTimeout(timer)
                   pending.delete(id)
-                  yield* failTransport(current.process, error)
+                  yield* failTransport(current, error)
                   resume(Effect.fail(error))
                 }),
               ),
@@ -311,7 +338,15 @@ export const layer = (options: Options = {}) =>
           return yield* new CommandMissingError({ message: MISSING_CODEX_MESSAGE })
         }
 
-        yield* startTransport(["app-server", "--listen", "stdio://"], "server.stdio.spawn")
+        // Prefer the shared daemon so every OpenCode window reuses one app-server; spawn a private one otherwise.
+        yield* (options.daemonSocket ?? startDaemon(command)).pipe(
+          Effect.flatMap((socketPath) => connect((events) => connectDaemon(socketPath, events))),
+          Effect.catch((error) =>
+            Effect.logWarning("server.daemon.unavailable", { error: error.message }).pipe(
+              Effect.andThen(connect((events) => connectStdio(command, events))),
+            ),
+          ),
+        )
 
         yield* send("initialize", {
           clientInfo: {
@@ -350,7 +385,7 @@ export const layer = (options: Options = {}) =>
         return usage
       })
 
-      const handleLine = Effect.fn("CodexService.handleLine")(function* (source: TransportProcess, line: string) {
+      const handleLine = Effect.fn("CodexService.handleLine")(function* (source: Connection, line: string) {
         const trimmed = line.trim()
         if (!trimmed) return
 
@@ -360,7 +395,7 @@ export const layer = (options: Options = {}) =>
           ),
         )
         if (!message) return
-        if (transport?.process !== source) return
+        if (transport !== source) return
 
         if (message.id === undefined) {
           yield* Effect.logDebug("protocol.notification", { method: message.method })
@@ -432,6 +467,23 @@ export function resolveCodexCommand(
   if (configured) return configured
 
   return CODEX_COMMAND_CANDIDATES.find(commandExists) ?? (commandExists("codex") ? "codex" : null)
+}
+
+function startDaemon(command: string): Effect.Effect<string, ServerStartError> {
+  return Effect.callback<string, ServerStartError>((resume) => {
+    execFile(command, ["app-server", "daemon", "start"], { timeout: DAEMON_START_TIMEOUT_MS }, (cause, stdout) => {
+      resume(
+        cause
+          ? Effect.fail(new ServerStartError({ message: "Failed to start the Codex app-server daemon.", cause }))
+          : decodeDaemonStatus(stdout).pipe(
+              Effect.map((status) => status.socketPath),
+              Effect.mapError(
+                (cause) => new ServerStartError({ message: "Unexpected Codex app-server daemon status.", cause }),
+              ),
+            ),
+      )
+    })
+  })
 }
 
 const parseProtocolMessage = Effect.fn("CodexService.parseProtocolMessage")(function* (line: string) {

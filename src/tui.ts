@@ -308,7 +308,7 @@ const plugin = Plugin.define({
       api.ui.toast.show({
         variant: "warning",
         title: "Codex required",
-        message: "Install Codex.app or the Codex CLI to see usage stats.",
+        message: "Install the ChatGPT app or the Codex CLI to see usage stats.",
       })
     }
 
