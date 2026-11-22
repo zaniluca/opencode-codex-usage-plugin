@@ -68,6 +68,7 @@ describe("CodexService", () => {
       await waitForSpawnCall(spawn, 1)
 
       expect(spawn).toHaveBeenCalledWith("/tmp/codex", ["app-server", "--listen", "stdio://"], {
+        shell: false,
         stdio: ["pipe", "pipe", "pipe"],
       })
 
@@ -181,6 +182,45 @@ describe("CodexService.resolveCodexCommand", () => {
 
   it("uses PATH lookup when no absolute candidate exists", () => {
     expect(CodexService.resolveCodexCommand((command) => command === "codex", {})).toBe("codex")
+  })
+
+  it.each(["codex.exe", "codex.cmd"])("uses PATH lookup for %s on Windows", (file) => {
+    expect(CodexService.resolveCodexCommand((command) => command === file, {}, "win32")).toBe(file)
+  })
+
+  it("ignores the extensionless npm shell shim on Windows", () => {
+    expect(CodexService.resolveCodexCommand((command) => command === "codex", {}, "win32")).toBeNull()
+  })
+
+  it("prefers the standalone Codex installer over PATH on Windows", () => {
+    const installed = "C:\\Users\\me\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe"
+
+    expect(
+      CodexService.resolveCodexCommand(
+        (command) => command === installed || command === "codex.exe",
+        { LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" },
+        "win32",
+        () => [],
+      ),
+    ).toBe(installed)
+  })
+
+  it("falls back to the newest ChatGPT app copy on Windows", () => {
+    const appCommands = [
+      "C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\bin\\new\\codex.exe",
+      "C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\bin\\old\\codex.exe",
+    ]
+    const listAppCommands = vi.fn(() => appCommands)
+
+    expect(
+      CodexService.resolveCodexCommand(
+        (command) => appCommands.includes(command),
+        { LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local" },
+        "win32",
+        listAppCommands,
+      ),
+    ).toBe("C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\bin\\new\\codex.exe")
+    expect(listAppCommands).toHaveBeenCalledWith("C:\\Users\\me\\AppData\\Local\\OpenAI\\Codex\\bin")
   })
 
   it("returns null when no Codex command exists", () => {
